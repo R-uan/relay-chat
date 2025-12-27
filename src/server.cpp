@@ -26,19 +26,20 @@ void Server::listen() {
   std::cout << "[DEBUG] Server listening..." << std::endl;
   epoll_event events[50];
   while (true) {
-    int nfds = epoll_wait(this->epollFd, events, 50, -1);
+    std::cout << "[DEBUG]: epollfd " << this->epoll_fd_ << '\n';
+    int nfds = epoll_wait(this->epoll_fd_, events, 50, -1);
     for (int i = 0; i < nfds; i++) {
       int fd = events[i].data.fd;
-      if (fd == this->serverFd) {
-        int ncfd = accept(this->serverFd, nullptr, nullptr);
+      if (fd == this->server_fd_) {
+        int ncfd = accept(this->server_fd_, nullptr, nullptr);
         if (ncfd != -1) {
           if (this->clients->has_capacity()) {
             epoll_event event;
             event.data.fd = ncfd;
             event.events = EPOLLIN | EPOLLONESHOT;
             {
-              std::unique_lock lock(this->epollMtx);
-              epoll_ctl(this->epollFd, EPOLL_CTL_ADD, ncfd, &event);
+              std::unique_lock lock(this->epoll_mtx_);
+              epoll_ctl(this->epoll_fd_, EPOLL_CTL_ADD, ncfd, &event);
             }
             this->clients->add_client(ncfd);
           } else {
@@ -50,7 +51,7 @@ void Server::listen() {
           }
         }
       } else {
-        std::shared_lock lock(this->epollMtx);
+        std::shared_lock lock(this->epoll_mtx_);
         auto find = this->clients->find_client(fd);
         if (find != std::nullopt) {
           std::shared_ptr<Client> client = find.value();
@@ -63,11 +64,11 @@ void Server::listen() {
               epoll_event event;
               event.data.fd = client->fd;
               event.events = EPOLLIN | EPOLLONESHOT;
-              std::unique_lock lock(this->epollMtx);
-              epoll_ctl(epollFd, EPOLL_CTL_MOD, client->fd, &event);
+              std::unique_lock lock(this->epoll_mtx_);
+              epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, client->fd, &event);
             } else {
               this->srv_disconnect(client);
-              epoll_ctl(this->epollFd, EPOLL_CTL_DEL, client->fd, nullptr);
+              epoll_ctl(this->epoll_fd_, EPOLL_CTL_DEL, client->fd, nullptr);
             }
           });
         }
