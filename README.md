@@ -197,7 +197,7 @@ Channel (unique pointer)
 - [ ] Channel command operations (`CH_COMMAND`)
 - [ ] Basic client application
 - [ ] Performance optimization
-
+- [ ] Make the thread pool static (global)
 ---
 
 ## Technical Notes

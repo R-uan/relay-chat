@@ -35,33 +35,34 @@ public:
     return config;
   }
 
-  void set_port(int port) { port_ = port; }
+  inline void set_port(int port) { port_ = port; }
+  inline void set_debug() { debug_mode_ = true; }
 
-  void set_max_channels(int size) {
+  inline void set_max_channels(int size) {
     if (is_bigger(size, MIN_CHANNELS)) {
       std::unique_lock<std::mutex> lock(mutex_);
       max_channels_ = size;
     }
   }
 
-  void set_max_clients(int size) {
+  inline void set_max_clients(int size) {
     if (is_bigger(size, MIN_CLIENTS)) {
       std::unique_lock<std::mutex> lock(mutex_);
       max_clients_ = size;
     }
   }
 
-  void set_pool_size(int size) {
+  inline void set_pool_size(int size) {
     if (is_bigger(size, MIN_THREADS)) {
       std::unique_lock<std::mutex> lock(mutex_);
       thread_pool_size_ = size;
     }
   }
 
-  bool debug_mode() const { return debug_mode_; }
-  int port() const { return port_; }
-  int max_clients() const { return max_clients_; }
-  int active_users() const { return active_users_; }
-  int max_channels() const { return max_channels_; }
-  int pool_size() const { return thread_pool_size_; }
+  inline bool debugging() const { return debug_mode_; }
+  inline int port() const { return port_; }
+  inline int max_clients() const { return max_clients_; }
+  inline int active_users() const { return active_users_; }
+  inline int max_channels() const { return max_channels_; }
+  inline int pool_size() const { return thread_pool_size_; }
 };

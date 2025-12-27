@@ -14,8 +14,8 @@ bool ChannelManager::has_capacity() {
   return this->MAXCHANNELS > this->channels.size();
 }
 
-std::vector<char> ChannelManager::create_channel(uint32_t i, WeakClient c,
-                                                 WeakServer s) {
+std::vector<char> ChannelManager::create_channel(uint32_t i, w_client c,
+                                                 w_server s) {
   auto channel = std::make_unique<Channel>(i, c, s);
   const std::vector<char> channelInfo = channel->info();
   {

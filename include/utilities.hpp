@@ -7,8 +7,9 @@
 
 class Channel;
 
-int i32_from_le(const std::vector<uint8_t> bytes);
+int i32_from_le(const std::vector<uint8_t> &bytes);
 std::vector<std::vector<uint8_t>> split_newline(std::vector<uint8_t> &data);
+
 enum DATAKIND {
   SVR_CONNECT = 1,
   SVR_DISCONNECT = 2,

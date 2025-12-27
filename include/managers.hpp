@@ -13,15 +13,15 @@ struct Client;
 class Server;
 class Channel;
 
-typedef std::weak_ptr<Client> WeakClient;
-typedef std::weak_ptr<Server> WeakServer;
+typedef std::weak_ptr<Client> w_client;
+typedef std::weak_ptr<Server> w_server;
 
 class ChannelManager {
 public:
   bool has_capacity();
   void remove_channel(uint32_t i);
   Channel *find_channel(uint32_t i) const;
-  std::vector<char> create_channel(uint32_t i, WeakClient c, WeakServer s);
+  std::vector<char> create_channel(uint32_t i, w_client c, w_server s);
   ChannelManager(int max) : MAXCHANNELS(max) {};
 
 private:

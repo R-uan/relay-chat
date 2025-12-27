@@ -1,13 +1,13 @@
 #include "server.hpp"
 #include "channel.hpp"
 #include "client.hpp"
+#include "managers.hpp"
+#include "spdlog/spdlog.h"
 #include "utilities.hpp"
 #include <cstdint>
-#include <iostream>
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <ostream>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
@@ -23,10 +23,9 @@
 // * Handles new client connections and new incoming request from already
 // stablished clients.
 void Server::listen() {
-  std::cout << "[DEBUG] Server listening..." << std::endl;
+  spdlog::info("server is now listening");
   epoll_event events[50];
   while (true) {
-    std::cout << "[DEBUG]: epollfd " << this->epoll_fd_ << '\n';
     int nfds = epoll_wait(this->epoll_fd_, events, 50, -1);
     for (int i = 0; i < nfds; i++) {
       int fd = events[i].data.fd;
@@ -43,7 +42,7 @@ void Server::listen() {
             }
             this->clients->add_client(ncfd);
           } else {
-            std::cout << "[DEBUG] Server client capacity full" << std::endl;
+            spdlog::warn("server capacity is full.");
             auto res = c_response(-3, DATAKIND::SVR_CONNECT, "server is full");
             auto payload = res.data;
             send(ncfd, payload.data(), payload.size(), 0);
@@ -77,46 +76,38 @@ void Server::listen() {
   }
 }
 
-// * Read incoming client packets.
-// - Reads the first four bytes in the client's file descriptor for the size of
-// the incoming data.
-// - Resizes the buffer to match the incoming data size or disconnects the
-// client if the size is lower than one.
-// - Reads the rest of the data into the appropriate sized buffer.
-// - Creates a Request object with the data received.
-// - Checks if the client is connected, if not, all requests received will
-// be treated as connection request until the client is connected.
-// - After connection, pass requests down to their respective handlers and
-// send back a response.
-int Server::read_incoming(std::shared_ptr<Client> client) {
-  int packetSize = this->read_size(client);
+/* Reads and redirects requests to appropriate handlers
+ */
+int Server::read_incoming(std::shared_ptr<Client> s_client) {
+  int packetSize = this->read_size(s_client);
   if (packetSize <= 0) {
     return -1;
   }
 
-  std::vector<uint8_t> buffer{};
+  std::vector<uint8_t> buffer;
   buffer.resize(packetSize);
   {
-    std::unique_lock lock(client->mtx);
-    if (recv(client->fd, buffer.data(), packetSize, 0) <= 0) {
+    std::unique_lock lock(s_client->mtx);
+    if (recv(s_client->fd, buffer.data(), packetSize, 0) <= 0) {
       return -1;
     }
   }
   Response response{};
   Request request(buffer);
-  if (!client->connected) {
+  if (!s_client->connected) {
     if (request.type != DATAKIND::SVR_CONNECT) {
       response = c_response(-1, DATAKIND::SVR_CONNECT, "connection needed");
     } else {
       auto payload = request.payload;
-      std::string name(payload.begin(), payload.end());
-      std::string newName = client->change_username(name);
-      response = c_response(request.id, DATAKIND::SVR_CONNECT, newName);
-      std::cout << "[DEBUG] New client: `" << newName << "`" << std::endl;
-      client->change_connection(true);
+      std::string username(payload.begin(), payload.end());
+      // returns a formatted username: `username@id`
+      std::string fmtusername = s_client->change_username(username);
+      response = c_response(request.id, DATAKIND::SVR_CONNECT, fmtusername);
+      spdlog::debug("new client: {0}", fmtusername);
+      s_client->set_connection(true);
     }
   } else {
-    std::weak_ptr<Client> wclient = client;
+    std::weak_ptr<Client> wclient = s_client;
     switch (request.type) {
     case DATAKIND::CH_CONNECT:
       response = this->ch_connect(wclient, request);
@@ -134,18 +125,22 @@ int Server::read_incoming(std::shared_ptr<Client> client) {
   }
 
   if (response.size > 0) {
-    client->send_packet(response);
+    s_client->send_packet(response);
   }
 
   return 0;
 }
 
-// * Reads the first four bytes on the file descriptor buffer to get the size of
-// the whole request.
-int Server::read_size(WeakClient pointer) {
+/* Reads the first 4 bytes of a fd buffer to get the request's size.
+ * Returns -1 if the client weak pointer fails to lock
+ */
+int Server::read_size(w_client pointer) {
   auto client = pointer.lock();
-  std::vector<uint8_t> buffer{};
-  buffer.resize(4);
+
+  if (!client)
+    return -1;
+
+  std::vector<uint8_t> buffer(4);
   {
     std::unique_lock lock(client->mtx);
     if (recv(client->fd, buffer.data(), 4, 0) <= 0) {
@@ -155,87 +150,97 @@ int Server::read_size(WeakClient pointer) {
   return i32_from_le(buffer);
 }
 
-// * Removes the client accross the application by lowering the shared_ptr
-// counter to zero.
-//
-// * Possible pointer locations:
-//    - Server: -> clients::unordered_map
-//    - Channel -> chatters::vector
-//    - Channel -> moderators::vector
-//    - Channel -> emperor::shared_ptr
-void Server::srv_disconnect(const WeakClient &wclient) {
-  auto sclient = wclient.lock();
-  sclient->connected.exchange(false);
-
-  for (int id : sclient->channels) {
+/* Removes the client accross the application by lowering the shared_ptr
+ * counter to zero.
+ *
+ * Pointer tracker:
+ *  - Server  -> clients::unordered_map
+ *  - Channel -> chatters::vector
+ *  - Channel -> moderators::vector
+ *  - Channel -> emperor::shared_ptr
+ */
+void Server::srv_disconnect(const w_client &w_client) {
+  auto s_client = w_client.lock();
+  s_client->connected.exchange(false);
+  // loop over the client's connected channels
+  // find said channels
+  // diconnect client from it
+  for (int id : s_client->channels) {
     auto channel = this->channels->find_channel(id);
     if (channel != nullptr) {
-      if (channel->disconnect_member(sclient)) {
+      // if the disconnect_member returns true it means the channel must be
+      // deleted
+      if (channel->disconnect_member(s_client)) {
+        spdlog::debug("{0} flagged for deletion", channel->name);
         this->channels->remove_channel(id);
       }
     }
   }
 
-  this->clients->remove_client(sclient->fd);
-  std::cout << "[DEBUG] `" << sclient->username << "` disconnected from server."
-            << std::endl;
+  this->clients->remove_client(s_client->fd);
+  spdlog::info("{0} disconnected from the server", s_client->username);
 }
 
 // CHANNEL RELATED REQUEST HANDLERS
 
-// * Request to join a channel.
-// * The JOIN packet payload will be composed of: <flag> \n <channel> \n <token>
-//  - <flag>    : channel creation flag
-//  - <channel> : target channel's id (int) to join.
-//  - <token>   : invitation token (optional).
-Response Server::ch_connect(WeakClient &client, Request &request) {
+/* Request to join a channel.
+ * The JOIN packet payload will be composed of: <flag> \n <channel> \n <token>
+ * - <flag>    : channel creation flag
+ * - <channel> : target channel's id (int) to join.
+ * - <token>   : invitation token (optional).
+ */
+Response Server::ch_connect(w_client &w_client, const Request &request) {
   auto body = request.payload;
-  if (body.size() < 5) {
+  if (body.size() < 5)
     return c_response(-1, DATAKIND::CH_CONNECT, "invalid packet");
-  }
 
-  bool flag = body[0] == 1;
-  int channelId = i32_from_le({body[1], body[2], body[3], body[4]});
-  auto channel = this->channels->find_channel(channelId);
-  // * If the channel is not found on the server's channel pool:
-  // - Check the creation flag to decide if a new channel should be created.
-  // - If the flag is false or the server MAXCHANNELS number has been
-  // reached: return a not found packet
-  // - Otherwise create the new channel with the client as the emperor.
-  if (channel == nullptr) {
-    if (flag && this->channels->has_capacity()) {
-      WeakClient weakClient = client;
-      std::weak_ptr<Server> weakServer = weak_from_this();
-      auto info = channels->create_channel(channelId, weakClient, weakServer);
+  bool creation_flag = body[0] == 1; // create channel if doesn't exist ?
+  int channel_id = i32_from_le({body[1], body[2], body[3], body[4]});
+  auto channel = this->channels->find_channel(channel_id);
+
+  if (channel == nullptr) { // channel doesn't exist...
+    // ...and will be created
+    if (creation_flag && this->channels->has_capacity()) {
+      std::weak_ptr<Server> w_server = weak_from_this();
+      auto info = channels->create_channel(channel_id, w_client, w_server);
       return c_response(request.id, DATAKIND::CH_CONNECT, info);
     }
+    // ...and won't be created
     return c_response(-1, DATAKIND::CH_CONNECT);
-  } else {
-    if (channel->enter_channel(client)) {
-      auto channelInfo = channel->info();
-      auto c = client.lock();
-      c->join_channel(channelId);
-      std::cout << "[DEBUG] " << c->username << " joined `" << channel->name
-                << "`" << std::endl;
-      return c_response(request.id, DATAKIND::CH_CONNECT, channelInfo);
+  } else { // channel exists and the client...
+    // ...successfully joined
+    if (channel->enter_channel(w_client)) {
+      auto s_client = w_client.lock();
+      s_client->add_channel(channel_id);
+      auto channel_info = channel->info();
+      spdlog::debug("{0} joined {1}", s_client->username, channel->name);
+      return c_response(request.id, DATAKIND::CH_CONNECT, channel_info);
     }
+    // ...couldn't join
     return c_response(-1, DATAKIND::CH_CONNECT);
   }
 }
 
-// * Disconnects the client from the channel.
-// - If channel may be flagged for deletion.
-Response Server::ch_disconnect(const WeakClient &sclient, Request &request) {
+/* Disconnects the client from the channel.
+ * - If channel may be flagged for deletion.
+ */
+Response Server::ch_disconnect(const w_client &w_client,
+                               const Request &request) {
   if (request.payload.size() >= 4) {
-    auto pl = request.payload;
-    uint32_t channelId = i32_from_le({pl[0], pl[1], pl[2], pl[3]});
-    auto channel = this->channels->find_channel(channelId);
+    auto payload = request.payload;
+    auto channel_id = i32_from_le(payload);
+    auto channel = this->channels->find_channel(channel_id);
+
     if (channel != nullptr) {
-      std::cout << "[DEBUG] " << sclient.lock()->username
-                << " disconnected from `" << channel->name << "`" << std::endl;
-      if (channel->disconnect_member(sclient)) {
-        this->channels->remove_channel(channelId);
+      auto s_client = w_client.lock();
+      s_client->remove_channel(channel_id);
+      spdlog::debug("{0} left {1}", s_client->username, channel->name);
+
+      if (channel->disconnect_member(w_client)) {
+        spdlog::debug("{0} flagged for deletion", channel->name);
+        this->channels->remove_channel(channel_id);
       }
+
       return c_response(request.id, DATAKIND::CH_DISCONNECT);
     }
   }
@@ -243,17 +248,19 @@ Response Server::ch_disconnect(const WeakClient &sclient, Request &request) {
   return c_response(-1, DATAKIND::CH_DISCONNECT);
 }
 
-// * Sends message in a channel.
-// - Checks if the channel exists
-// - Checks if the client is in the channel.
-Response Server::ch_message(const WeakClient &client, Request &request) {
-  const auto body = request.payload;
-  const std::string message(body.begin() + 4, body.end());
-  const uint32_t channelId = i32_from_le({body[0], body[1], body[2], body[3]});
-  const auto channel = this->channels->find_channel(channelId);
+/* Sends message in a channel.
+ * - Checks if the channel exists
+ * - Checks if the client is in the channel.
+ */
+Response Server::ch_message(const w_client &w_client, const Request &request) {
+  const auto payload = request.payload;
+  const uint32_t channel_id = i32_from_le(payload);
+  const std::string message(payload.begin() + 4, payload.end());
+  const auto channel = this->channels->find_channel(channel_id);
+
   if (channel != nullptr) {
-    if (client.lock()->is_member(channelId)) {
-      channel->send_message(client, message);
+    if (w_client.lock()->is_member(channel_id)) {
+      channel->send_message(w_client, message);
       return c_response(request.id, DATAKIND::CH_MESSAGE);
     }
   }
@@ -261,22 +268,23 @@ Response Server::ch_message(const WeakClient &client, Request &request) {
   return c_response(-1, DATAKIND::CH_MESSAGE);
 }
 
-// * Maps command request to their respective handlers
-Response Server::ch_command(const WeakClient &client, Request &request) {
-  const auto body = request.payload;
-  const std::string message(body.begin() + 5, body.end());
-  const uint32_t channelId = i32_from_le({body[1], body[2], body[3], body[4]});
-  const auto channel = this->channels->find_channel(channelId);
-  const uint8_t commandId = body[0];
+/* Maps command request to their respective handlers
+ */
+Response Server::ch_command(const w_client &w_client, const Request &request) {
+  const auto payload = request.payload;
+  const auto command_id = payload[0];
+  const auto channel_id = i32_from_le(payload);
+  const std::string message(payload.begin() + 5, payload.end());
+  const auto channel = this->channels->find_channel(channel_id);
 
   if (channel != nullptr) {
-    if (client.lock()->is_member(channelId)) {
-      switch (commandId) {
+    if (w_client.lock()->is_member(channel_id)) {
+      switch (command_id) {
       case COMMAND::RENAME:
-        channel->set_channel_name(client, message);
+        channel->set_channel_name(w_client, message);
         break;
       case COMMAND::PIN:
-        channel->pin_message(client, message);
+        channel->pin_message(w_client, message);
         break;
       }
       return c_response(request.id, DATAKIND::CH_MESSAGE, "");

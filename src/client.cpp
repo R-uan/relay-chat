@@ -4,12 +4,12 @@
 #include <sstream>
 #include <sys/socket.h>
 
-void Client::join_channel(const int channelId) {
+void Client::add_channel(const int channelId) {
   std::unique_lock lock(this->mtx);
   this->channels.push_back(channelId);
 }
 
-void Client::leave_channel(const int channelId) {
+void Client::remove_channel(const int channelId) {
   std::unique_lock lock(this->mtx);
   std::erase_if(this->channels,
                 [&](const int &channel) { return channel == channelId; });
@@ -29,7 +29,7 @@ bool Client::is_member(const int channelId) {
          this->channels.end();
 }
 
-void Client::change_connection(bool b) { this->connected.exchange(b); }
+void Client::set_connection(bool b) { this->connected.exchange(b); }
 
 std::string Client::change_username(std::string username) {
   std::ostringstream holder;

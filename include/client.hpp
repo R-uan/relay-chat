@@ -1,9 +1,9 @@
 #pragma once
 
+#include "spdlog/spdlog.h"
 #include "utilities.hpp"
 #include <atomic>
 #include <iostream>
-#include <memory>
 #include <mutex>
 #include <ostream>
 #include <sstream>
@@ -35,15 +35,15 @@ struct Client {
     this->id = id;
   }
 
-  ~Client() { close(this->fd); }
+  ~Client() {
+    close(this->fd);
+    spdlog::debug("client destroyed {0}", this->username);
+  }
 
-  void change_connection(bool b);
+  void set_connection(bool b);
   bool is_member(const int channelId);
-  void join_channel(const int channelId);
+  void add_channel(const int channelId);
   bool send_packet(const Response packet);
-  void leave_channel(const int channelId);
+  void remove_channel(const int channelId);
   std::string change_username(std::string username);
 };
-
-typedef std::shared_ptr<Client> SharedClient;
-typedef std::weak_ptr<Client> WeakClient;
