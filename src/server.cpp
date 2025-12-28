@@ -3,6 +3,7 @@
 #include "client.hpp"
 #include "managers.hpp"
 #include "spdlog/spdlog.h"
+#include "thread_pool.hpp"
 #include "utilities.hpp"
 #include <cstdint>
 #include <memory>
@@ -54,7 +55,7 @@ void Server::listen() {
         auto find = this->clients->find_client(fd);
         if (find != std::nullopt) {
           std::shared_ptr<Client> client = find.value();
-          this->threadPool->enqueue([this, client]() {
+          ThreadPool::initialize().enqueue([this, client]() {
             int result = this->read_incoming(client);
             // * Result can be 0 or -1
             // *  0 : Rearms the client's event watcher

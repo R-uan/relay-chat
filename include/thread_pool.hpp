@@ -1,5 +1,6 @@
 #pragma once
 
+#include "configurations.hh"
 #include <atomic>
 #include <condition_variable>
 #include <functional>
@@ -9,7 +10,13 @@
 #include <utility>
 #include <vector>
 class ThreadPool {
-public:
+private:
+  std::mutex mtx;
+  std::condition_variable cv;
+  std::atomic_bool stop{false};
+  std::vector<std::thread> threads;
+  std::queue<std::function<void()>> tasks;
+
   ThreadPool(int size) {
     for (int t = 0; t < size; t++) {
       this->threads.emplace_back([this]() {
@@ -32,6 +39,10 @@ public:
     }
   }
 
+public:
+  ThreadPool(const ServerConfiguration &) = delete;
+  ThreadPool &operator=(const ThreadPool &) = delete;
+
   ~ThreadPool() {
     {
       std::unique_lock lock(this->mtx);
@@ -48,10 +59,8 @@ public:
     this->cv.notify_one();
   }
 
-private:
-  std::mutex mtx;
-  std::condition_variable cv;
-  std::atomic_bool stop{false};
-  std::vector<std::thread> threads;
-  std::queue<std::function<void()>> tasks;
+  static ThreadPool &initialize() {
+    static ThreadPool pool(ServerConfiguration::instance().pool_size());
+    return pool;
+  }
 };

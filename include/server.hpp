@@ -36,15 +36,15 @@ private:
   Response ch_disconnect(const w_client &client, const Request &request);
 
 public:
-  std::unique_ptr<ThreadPool> threadPool;
   std::unique_ptr<ClientManager> clients;
   std::unique_ptr<ChannelManager> channels;
 
   Server() {
     auto &config = ServerConfiguration::instance();
 
+    // global thread pool first access
+    ThreadPool::initialize();
     this->server_fd_ = socket(AF_INET, SOCK_STREAM, 0);
-    this->threadPool = std::make_unique<ThreadPool>(config.pool_size());
     this->clients = std::make_unique<ClientManager>(config.max_clients());
     this->channels = std::make_unique<ChannelManager>(config.max_channels());
 

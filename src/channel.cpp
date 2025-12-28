@@ -2,6 +2,7 @@
 #include "managers.hpp"
 #include "server.hpp"
 #include "spdlog/spdlog.h"
+#include "thread_pool.hpp"
 #include "utilities.hpp"
 #include <algorithm>
 #include <cmath>
@@ -87,7 +88,7 @@ Channel::Channel(int id, w_client creator, w_server server)
         return;
 
       if (!this->server.expired()) {
-        this->server.lock()->threadPool->enqueue([this]() {
+        ThreadPool::initialize().enqueue([this]() {
           std::vector<Response> messages_to_send;
           {
             std::unique_lock lock(this->queueMutex);
@@ -110,7 +111,6 @@ Channel::Channel(int id, w_client creator, w_server server)
 }
 
 Channel::~Channel() {
-  auto server = this->server.lock();
   auto data = std::format("{} destroyed", this->name);
   auto packet = c_response(0, DATAKIND::CH_COMMAND, data);
   // revise this later
@@ -119,7 +119,7 @@ Channel::~Channel() {
       auto client = pointer.lock();
       client->remove_channel(this->id);
       if (client->connected) {
-        server->threadPool->enqueue(
+        ThreadPool::initialize().enqueue(
             [packet, client]() { client->send_packet(packet); });
       }
     }
@@ -151,8 +151,7 @@ std::vector<char> Channel::info() {
 }
 
 void Channel::broadcast(Response packet) {
-  auto server = this->server.lock();
-  server->threadPool->enqueue([&, this, packet]() {
+  ThreadPool::initialize().enqueue([&, this, packet]() {
     for (auto member : this->members) {
       if (auto client = member.lock()) {
         client->send_packet(packet);
