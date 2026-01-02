@@ -1,7 +1,7 @@
-#include "client.hpp"
+#include "client.hh"
 #include <algorithm>
+#include <format>
 #include <mutex>
-#include <sstream>
 #include <sys/socket.h>
 
 void Client::add_channel(const int channelId) {
@@ -32,9 +32,8 @@ bool Client::is_member(const int channelId) {
 void Client::set_connection(bool b) { this->connected.exchange(b); }
 
 std::string Client::change_username(std::string username) {
-  std::ostringstream holder;
-  holder << username << "@" << this->id;
   std::unique_lock lock(this->mtx);
-  this->username = holder.str();
-  return holder.str();
+  auto nusername = std::format("{0}{1}", username, this->id);
+  this->username = nusername;
+  return nusername;
 }

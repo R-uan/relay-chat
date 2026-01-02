@@ -1,14 +1,16 @@
 #include "configurations.hh"
-#include "server.hpp"
+#include "server.hh"
 #include "spdlog/common.h"
 #include "spdlog/logger.h"
 #include "spdlog/sinks/basic_file_sink.h"
 #include "spdlog/sinks/stdout_color_sinks.h"
 #include "spdlog/spdlog.h"
+#include "websocket_server.hh"
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 void setup_logger(bool debug_mode) {
@@ -93,6 +95,13 @@ int main(int argc, char *argv[]) {
 
   setup_logger(configuration.debugging());
   std::shared_ptr<Server> server = std::make_shared<Server>();
-  server->listen();
+  WebSocketServer websocket(server);
+
+  std::thread tcp_thread([&server]() { server->listen(); });
+  std::thread ws_thread([&websocket]() { websocket.run(8081); });
+
+  tcp_thread.join();
+  ws_thread.join();
+
   return 0;
 }

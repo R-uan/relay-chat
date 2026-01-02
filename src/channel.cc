@@ -1,35 +1,46 @@
-#include "channel.hpp"
-#include "managers.hpp"
-#include "server.hpp"
+#include "channel.hh"
+#include "client.hh"
 #include "spdlog/spdlog.h"
-#include "thread_pool.hpp"
-#include "utilities.hpp"
+#include "thread_pool.hh"
+#include "typedef.hh"
+#include "utilities.hh"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <format>
-#include <optional>
 #include <string>
 #include <sys/types.h>
 #include <vector>
 
-/*Enters the channel.
- * - Check if the MAXCAPACITY has been reached.
- * - If the channel is secret, check if the client was invited.
+/* Attempt to add a member to the channel.
+ *
+ * Check if the MAXCAPACITY has been reached.
+ *
+ * If the channel is secret, check if the client was invited.
  */
-bool Channel::enter_channel(w_client w_client) {
-  if (this->secret)
-    if (std::erase_if(this->invitations, [&](int &invitation) {
-          return invitation == w_client.lock()->id;
-        }) == 0)
-      return false;
+JOINRESULT Channel::add_member(w_client w_client) {
+  auto s_client = w_client.lock();
+  auto is_banned = std::find_if(this->banned.begin(), this->banned.end(),
+                                [&](int id) { return id == s_client->id; });
+  if (is_banned != this->banned.end())
+    return JOINRESULT::BANNED;
 
-  if (this->members.size() == this->MAXCAPACITY)
-    return false;
+  // capacity check before secrecy so invitation doesn't get deleted on full
+  // server
+  if (this->members.size() >= this->MAXCAPACITY) {
+    return JOINRESULT::FULL;
+  }
+
+  // if no invitation was deleted that means the client wasn't invited
+  if (this->secret && std::erase_if(this->invitations, [&](int id) {
+                        return id == s_client->id;
+                      }) == 0) {
+    return JOINRESULT::SECRET;
+  }
 
   this->members.push_back(w_client);
-  return true;
+  return JOINRESULT::SUCCESS;
 }
 
 /* Disconnects a member from the channel.
@@ -37,7 +48,7 @@ bool Channel::enter_channel(w_client w_client) {
  * not. It will only be true if no moderators are available when the emperor
  * leaves.
  */
-bool Channel::disconnect_member(const w_client &w_client) {
+bool Channel::remove_member(const w_client &w_client) {
   auto s_client = w_client.lock();
   std::unique_lock lock(this->mtx);
   // member leaving is the emperor and the channel...
@@ -71,8 +82,7 @@ bool Channel::disconnect_member(const w_client &w_client) {
   return false;
 }
 
-Channel::Channel(int id, w_client creator, w_server server)
-    : id(id), emperor(creator), server(server) {
+Channel::Channel(int id, w_client creator) : id(id), emperor(creator) {
   this->name = std::format("#channel{}", id);
   this->members.push_back(creator);
   spdlog::debug("channel created: {0}", this->name);
@@ -87,40 +97,40 @@ Channel::Channel(int id, w_client creator, w_server server)
       if (this->stopBroadcast)
         return;
 
-      if (!this->server.expired()) {
-        ThreadPool::initialize().enqueue([this]() {
-          std::vector<Response> messages_to_send;
-          {
-            std::unique_lock lock(this->queueMutex);
-            while (!this->messageQueue.empty()) {
-              messages_to_send.push_back(this->messageQueue.front());
-              this->messageQueue.pop();
+      ThreadPool::initialize().enqueue([this]() {
+        std::vector<Response> messages_to_send;
+        {
+          std::unique_lock lock(this->queueMutex);
+          while (!this->messageQueue.empty()) {
+            messages_to_send.push_back(this->messageQueue.front());
+            this->messageQueue.pop();
+          }
+        }
+        for (const auto &packet : messages_to_send) {
+          for (auto member : this->members) {
+            if (auto client = member.lock()) {
+              client->send_packet(packet);
             }
           }
-          for (const auto &packet : messages_to_send) {
-            for (auto member : this->members) {
-              if (auto client = member.lock()) {
-                client->send_packet(packet);
-              }
-            }
-          }
-        });
-      }
+        }
+      });
     }
   });
 }
 
 Channel::~Channel() {
-  auto data = std::format("{} destroyed", this->name);
-  auto packet = c_response(0, DATAKIND::CH_COMMAND, data);
-  // revise this later
-  for (w_client pointer : this->members) {
-    if (!pointer.expired()) {
-      auto client = pointer.lock();
-      client->remove_channel(this->id);
-      if (client->connected) {
-        ThreadPool::initialize().enqueue(
-            [packet, client]() { client->send_packet(packet); });
+  auto data = std::format("{} has been deleted", this->name);
+  auto packet = response(0, CH_DELETE, data);
+
+  //
+  auto &thread_pool = ThreadPool::initialize();
+  for (w_client w_client : this->members) {
+    if (!w_client.expired()) {
+      auto s_client = w_client.lock();
+      s_client->remove_channel(this->id);
+      if (s_client->connected) {
+        thread_pool.enqueue(
+            [packet, s_client]() { s_client->send_packet(packet); });
       }
     }
   }
@@ -171,7 +181,7 @@ bool Channel::send_message(const w_client &wclient, std::string message) {
   std::memcpy(payload.data() + 4, &clientId, sizeof(clientId));
   std::memcpy(payload.data() + 8, &message, message.size());
 
-  Response packet = this->create_broadcast(DATAKIND::CH_MESSAGE, payload);
+  Response packet = this->create_broadcast(PACKET_TYPE::CH_MESSAGE, payload);
   std::unique_lock lock(this->queueMutex);
   this->messageQueue.push(packet);
   this->cv.notify_one();
@@ -181,18 +191,10 @@ bool Channel::send_message(const w_client &wclient, std::string message) {
 // UTILITIES
 
 // Creates a response packet from a string.
-Response Channel::create_broadcast(DATAKIND type, std::vector<char> data) {
-  auto response = c_response(this->packetIds, type, data);
+Response Channel::create_broadcast(PACKET_TYPE type, std::vector<char> data) {
+  auto response = ::response(this->packetIds, type, data);
   this->packetIds.fetch_add(1);
   return response;
-}
-
-// Creates a response packet for a CH_COMMAND request.
-Response Channel::create_broadcast(COMMAND command, std::string data) {
-  std::vector<char> payload(data.size() + 1);
-  payload[0] = command;
-  std::memcpy(payload.data() + 1, data.data(), data.size());
-  return this->create_broadcast(DATAKIND::CH_COMMAND, payload);
 }
 
 // Checks if the actor is a moderator or emperor
@@ -238,23 +240,20 @@ bool Channel::kick_member(const w_client &w_client, int target_id) {
       return false;
     spdlog::debug("member kicked from {0}", this->name);
 
-    return disconnect_member(*target_client);
+    return remove_member(*target_client);
   }
   return false;
 }
 
-// * Invites a member to the channel.
-// - If the channel is secret, only moderators can invite.
+/*
+ * Add a client to the invitation list
+ * Only authorities can invite to private servers
+ * */
 bool Channel::invite_member(const w_client &w_client, int target_id) {
   if (this->secret && !this->is_authority(w_client))
     return false;
-  auto server = this->server.lock();
-  auto new_member = server->clients->find_client(target_id);
-  if (new_member != std::nullopt) {
-    this->invitations.push_back(target_id);
-    return true;
-  }
-  return false;
+  this->invitations.push_back(target_id);
+  return true;
 }
 
 // * Promote member into a moderator.
@@ -299,40 +298,4 @@ bool Channel::promote_moderator(const w_client &w_client, int target_id) {
   spdlog::debug("moderator promoted to emperor: {0} -> {1}", this->name,
                 this->emperor.lock()->username);
   return true;
-}
-
-// * Pins a message on the server to be seen by all members.
-// - Only moderators can execute this command.
-// - The message will be broadcasted to the whole channel.
-bool Channel::pin_message(const w_client &w_client, std::string message) {
-  if (this->is_authority(w_client)) {
-    {
-      std::unique_lock lock(this->mtx);
-      this->pinnedMessage = message;
-    }
-    auto packet = this->create_broadcast(COMMAND::PIN, message);
-    this->broadcast(packet);
-    return true;
-  }
-
-  return false;
-}
-
-// * Changes the channel name.
-// - Only the emperor can execute this.
-// - The new name can have between 6-24 characters.
-// - The new name will be broadcasted to the whole channel.
-bool Channel::set_channel_name(const w_client &w_client, std::string new_name) {
-  if (this->emperor.lock() == w_client.lock()) {
-    spdlog::debug("channel name changed: {0} -> {1}", this->name, new_name);
-    {
-      std::unique_lock lock(this->mtx);
-      this->name = new_name;
-    }
-    auto packet = this->create_broadcast(COMMAND::RENAME, new_name);
-    this->broadcast(packet);
-    return true;
-  }
-
-  return false;
 }

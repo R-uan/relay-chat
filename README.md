@@ -197,7 +197,9 @@ Channel (unique pointer)
 - [ ] Channel command operations (`CH_COMMAND`)
 - [ ] Basic client application
 - [ ] Performance optimization
-- [ ] Make the thread pool static (global)
+- [x] Make the thread pool static (global)
+- [x] remove channel's dependency on server
+- [ ] remake CH_COMMAND into CH_UPDATE with bitmask
 ---
 
 ## Technical Notes

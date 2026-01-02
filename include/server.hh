@@ -1,11 +1,11 @@
 #pragma once
 
-#include "channel.hpp"
-#include "client.hpp"
+#include "client.hh"
 #include "configurations.hh"
-#include "managers.hpp"
+#include "managers.hh"
+#include "protocol.hh"
 #include "spdlog/spdlog.h"
-#include "thread_pool.hpp"
+#include "thread_pool.hh"
 #include <arpa/inet.h>
 #include <cstdlib>
 #include <memory>
@@ -21,32 +21,20 @@ private:
   int server_fd_;
   std::shared_mutex epoll_mtx_;
 
+  std::shared_ptr<ClientManager> clients;
+  std::shared_ptr<ChannelManager> channels;
+
   int read_size(w_client pointer); // *
+  void disconnect(const w_client &w_client);
   int read_incoming(std::shared_ptr<Client> client);
 
-  // Server Related Request Handlers
-  // SVR_CONNECT handler is builtin the read_incoming
-  // SRV_MESSAGE is exclusive to server -> client so it doesn't have a handler.
-  void srv_disconnect(const w_client &client);
-
-  // Channel Related Request Handlers
-  Response ch_connect(w_client &client, const Request &request);
-  Response ch_command(const w_client &client, const Request &request);
-  Response ch_message(const w_client &client, const Request &request);
-  Response ch_disconnect(const w_client &client, const Request &request);
-
 public:
-  std::unique_ptr<ClientManager> clients;
-  std::unique_ptr<ChannelManager> channels;
-
   Server() {
     auto &config = ServerConfiguration::instance();
 
     // global thread pool first access
     ThreadPool::initialize();
     this->server_fd_ = socket(AF_INET, SOCK_STREAM, 0);
-    this->clients = std::make_unique<ClientManager>(config.max_clients());
-    this->channels = std::make_unique<ChannelManager>(config.max_channels());
 
     if (this->server_fd_ == -1) {
       spdlog::error("could not create server socket.");
@@ -90,5 +78,4 @@ public:
   }
 
   void listen();
-  void destroy_channel(int id);
 };

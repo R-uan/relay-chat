@@ -40,7 +40,7 @@ private:
   }
 
 public:
-  ThreadPool(const ServerConfiguration &) = delete;
+  ThreadPool(const ThreadPool &) = delete;
   ThreadPool &operator=(const ThreadPool &) = delete;
 
   ~ThreadPool() {

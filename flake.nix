@@ -1,55 +1,50 @@
 {
-  description = "A Nix-flake-based C/C++ development environment";
-
+  description = "C/C++ development environment";
   inputs.nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0"; # stable Nixpkgs
 
-  outputs =
-    { self, ... }@inputs:
+  outputs = {self, ...} @ inputs: let
+    supportedSystems = [
+      "x86_64-linux"
+      "aarch64-linux"
+      "x86_64-darwin"
+      "aarch64-darwin"
+    ];
 
-    let
-      supportedSystems = [
-        "x86_64-linux"
-        "aarch64-linux"
-        "x86_64-darwin"
-        "aarch64-darwin"
-      ];
-      forEachSupportedSystem =
-        f:
-        inputs.nixpkgs.lib.genAttrs supportedSystems (
-          system:
+    forEachSupportedSystem = f:
+      inputs.nixpkgs.lib.genAttrs supportedSystems (
+        system:
           f {
-            pkgs = import inputs.nixpkgs { inherit system; };
+            pkgs = import inputs.nixpkgs {inherit system;};
           }
-        );
-    in
-    {
-      devShells = forEachSupportedSystem (
-        { pkgs }:
-        {
-          default =
-            pkgs.mkShell.override
-              {
-                # Override stdenv in order to change compiler:
-                # stdenv = pkgs.clangStdenv;
-              }
-              {
-                packages =
-                  with pkgs;
-                  [
-                    clang-tools
-                    cmake
-                    codespell
-                    conan
-                    cppcheck
-                    doxygen
-                    gtest
-                    lcov
-                    vcpkg
-                    vcpkg-tool
-                  ]
-                  ++ (if system == "aarch64-darwin" then [ ] else [ gdb ]);
-              };
-        }
       );
-    };
+  in {
+    devShells = forEachSupportedSystem (
+      {pkgs}: {
+        default =
+          pkgs.mkShell.override {}
+          {
+            packages = with pkgs;
+              [
+                cmake
+                ninja
+                asio
+                boost
+                gtest
+                spdlog
+                pkg-config
+                clang-tools
+                websocketpp
+                pyright
+                python312
+                python312Packages.websockets
+              ]
+              ++ (
+                if system == "aarch64-darwin"
+                then []
+                else [gdb]
+              );
+          };
+      }
+    );
+  };
 }
