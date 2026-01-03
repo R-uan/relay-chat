@@ -3,13 +3,13 @@
 #include <concepts>
 #include <cstdint>
 #include <cstring>
+#include <spdlog/spdlog.h>
 #include <sys/types.h>
 #include <vector>
 
 class Channel;
 
 int i32_from_le(const std::vector<uint8_t> &bytes);
-std::vector<std::vector<uint8_t>> split_newline(std::vector<uint8_t> &data);
 
 enum class PACKET_TYPE : uint32_t {
   // If any of these fails they will have an ID of -1 and a reason payload.
@@ -152,5 +152,23 @@ struct Request {
     this->id = i32_from_le({data[0], data[1], data[2], data[3]});
     this->type = i32_from_le({data[4], data[5], data[6], data[7]});
     this->payload = std::vector<uint8_t>(&data[8], &data[data.size() - 2]);
+    spdlog::debug("type: {}", this->type);
+    spdlog::debug("id: {}", this->id);
   }
 };
+
+inline std::vector<std::vector<uint8_t>> split(const std::vector<uint8_t> &data,
+                                               uint8_t delimiter) {
+  std::vector<std::vector<uint8_t>> result;
+  auto start = data.begin();
+
+  for (auto it = data.begin(); it != data.end(); ++it) {
+    if (*it == delimiter) {
+      result.emplace_back(start, it);
+      start = it + 1;
+    }
+  }
+  result.emplace_back(start, data.end());
+
+  return result;
+}

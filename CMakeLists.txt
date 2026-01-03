@@ -16,26 +16,17 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     endif()
 endif()
 
-# Find Boost (with required components for websocketpp)
-find_package(Boost REQUIRED COMPONENTS system thread)
-
-# Find websocketpp
-find_package(websocketpp REQUIRED)
-
-# Find spdlog
-find_package(spdlog REQUIRED)
-
-# Find GTest
-find_package(GTest REQUIRED)
-
-# Find Threads
+# Find all packages FIRST before using them
 find_package(Threads REQUIRED)
+find_package(Boost REQUIRED COMPONENTS system thread)
+find_package(websocketpp REQUIRED)
+find_package(spdlog REQUIRED)
+find_package(GTest REQUIRED)
 
 # Optionally find asio if using standalone
 find_path(ASIO_INCLUDE_DIR 
     NAMES asio.hpp
 )
-
 find_path(WEBSOCKETPP_INCLUDE_DIR 
     NAMES websocketpp/server.hpp
     REQUIRED
@@ -47,46 +38,47 @@ if(ASIO_INCLUDE_DIR)
 endif()
 message(STATUS "Found websocketpp: ${WEBSOCKETPP_INCLUDE_DIR}")
 
-# Gather source files
-file(GLOB_RECURSE SOURCES "src/*.cc")
+# Gather source files (exclude main.cc)
+file(GLOB_RECURSE LIB_SOURCES "src/*.cc")
+list(FILTER LIB_SOURCES EXCLUDE REGEX ".*main\\.cc$")
 
-# Create executable
-add_executable(${PROJECT_NAME} ${SOURCES})
+# Create a library with your core logic
+add_library(${PROJECT_NAME}_lib STATIC ${LIB_SOURCES})
 
-# Include directories
-target_include_directories(${PROJECT_NAME} PRIVATE
+target_include_directories(${PROJECT_NAME}_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${Boost_INCLUDE_DIRS}
     ${WEBSOCKETPP_INCLUDE_DIR}
 )
 
-# Add asio include if found (for standalone mode)
 if(ASIO_INCLUDE_DIR)
-    target_include_directories(${PROJECT_NAME} PRIVATE ${ASIO_INCLUDE_DIR})
-    target_compile_definitions(${PROJECT_NAME} PRIVATE
+    target_include_directories(${PROJECT_NAME}_lib PUBLIC ${ASIO_INCLUDE_DIR})
+    target_compile_definitions(${PROJECT_NAME}_lib PUBLIC
         ASIO_STANDALONE
         _WEBSOCKETPP_CPP11_THREAD_
     )
 endif()
 
-# Link libraries
-target_link_libraries(${PROJECT_NAME} PRIVATE
+target_link_libraries(${PROJECT_NAME}_lib PUBLIC
     Threads::Threads
     Boost::system
     Boost::thread
     spdlog::spdlog
 )
-# Testing
-# enable_testing()
 
-# add_executable(
-#relay_chat_tests
-# tests/client_tests.cc
-#)
-#target_link_libraries(
-#  relay_chat_tests
-#  GTest::gtest_main
-#)
-#include(GoogleTest)
-#gtest_discover_tests(relay_chat_tests)
+# Main executable (just links to the library)
+add_executable(${PROJECT_NAME} src/main.cc)
+target_link_libraries(${PROJECT_NAME} PRIVATE ${PROJECT_NAME}_lib)
+
+# Testing
+enable_testing()
+add_executable(tests tests/protocol_tests.cc)
+
+target_link_libraries(tests PRIVATE
+    ${PROJECT_NAME}_lib
+    GTest::gtest_main
+)
+
+include(GoogleTest)
+gtest_discover_tests(tests)

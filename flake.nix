@@ -23,10 +23,15 @@
         default =
           pkgs.mkShell.override {}
           {
+            buildInputs = with pkgs; [
+              python312
+              python312Packages.websockets
+            ];
+
             packages = with pkgs;
               [
-                cmake
                 ninja
+                cmake
                 asio
                 boost
                 gtest
@@ -35,8 +40,6 @@
                 clang-tools
                 websocketpp
                 pyright
-                python312
-                python312Packages.websockets
               ]
               ++ (
                 if system == "aarch64-darwin"

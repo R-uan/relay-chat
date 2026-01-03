@@ -16,8 +16,11 @@ class ChannelManager {
 public:
   bool has_capacity();
   void remove_channel(uint32_t i);
+  std::vector<ChannelView> get_views();
+
   Channel *find_channel(uint32_t i) const;
-  std::vector<char> create_channel(uint32_t i, w_client c);
+
+  std::vector<char> create_channel(std::string name, bool secret);
 
   ChannelManager(const ChannelManager &) = delete;
   ChannelManager &operator=(ChannelManager &) = delete;
@@ -34,6 +37,7 @@ private:
 private:
   std::shared_mutex mutex;
   const size_t MAXCHANNELS;
+  std::atomic_int channel_id_tracker_{1};
   std::unordered_map<uint32_t, std::unique_ptr<Channel>> channels;
 };
 

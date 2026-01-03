@@ -5,12 +5,33 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <queue>
-#include <string_view>
 #include <thread>
 #include <vector>
 
 enum class JOINRESULT { SUCCESS = 0, BANNED, SECRET, FULL };
+enum class MODERATIONRESULT { SUCCESS, NOT_FOUND, UNAUTHORIZED };
+
+struct ChannelView {
+  bool secret;
+  const uint32_t *id;
+  const std::string *name;
+
+  ChannelView(Channel *channel);
+};
+
+struct MessageView {
+  const uint32_t sender_id;
+  const uint32_t channel_id;
+  const uint32_t reply_to;
+  const std::string message;
+
+  MessageView(uint32_t sender, uint32_t channel, uint32_t reply_to,
+              std::string message)
+      : sender_id(sender), channel_id(channel), reply_to(reply_to),
+        message(message) {}
+};
 
 /* Each channel HAS an emperor and CAN HAVE up to five moderators.
  * - emperor : the one that created the channel by joining it first.
@@ -27,10 +48,9 @@ enum class JOINRESULT { SUCCESS = 0, BANNED, SECRET, FULL };
  */
 class Channel {
 public:
-  const int id;
+  uint32_t id;
   std::mutex mtx;
   std::string name;
-  w_client emperor;
   const size_t MAXCAPACITY{50};
 
   std::atomic_int packetIds{1};
@@ -48,27 +68,22 @@ public:
   std::thread messageQueueWorkerThread;
   std::atomic_bool stopBroadcast{false};
 
-  void broadcast(Response packet);
-  bool send_message(const w_client &w_client, const std::string message);
-
-  JOINRESULT add_member(w_client w_client);      // *
-  bool remove_member(const w_client &target_id); // *
-
   // utils
+  ChannelView get_view();
   std::vector<char> info();
-  bool is_authority(const w_client &w_client); // *
-  void self_destroy(std::string_view reason);  // *
+  bool is_moderator(const w_client &w_client); // *
 
-  Response create_broadcast(PACKET_TYPE type, std::vector<char> data);
+  void queue_message(const MessageView view);
 
-  // CH_COMMAND HANDLERS (Implementations [7/7])
-  bool change_privacy(const w_client &w_client);
-  bool kick_member(const w_client &w_client, int target_id);
-  bool invite_member(const w_client &w_client, int target_id);
-  bool promote_member(const w_client &w_client, int target_id);
-  bool promote_moderator(const w_client &w_client, int target_id);
+  void leave_channel(const w_client &target_id);     // *
+  JOINRESULT join_channel(const w_client &w_client); // *
 
-  Channel(int id, w_client creator);
+  MODERATIONRESULT change_privacy(const w_client &w_client);
+  MODERATIONRESULT kick_member(const w_client &w_client, int target_id);
+  MODERATIONRESULT invite_member(const w_client &w_client, int target_id);
+  MODERATIONRESULT promote_member(const w_client &w_client, int target_id);
+
+  Channel(uint32_t id, std::string name);
 
   ~Channel();
 };

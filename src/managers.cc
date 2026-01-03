@@ -15,20 +15,6 @@ bool ChannelManager::has_capacity() {
   return this->MAXCHANNELS > this->channels.size();
 }
 
-std::vector<char> ChannelManager::create_channel(uint32_t i, w_client c) {
-  auto channel = std::make_unique<Channel>(i, c);
-  const std::vector<char> channelInfo = channel->info();
-  {
-    auto client = c.lock();
-    client->add_channel(i);
-  }
-  {
-    std::unique_lock lock(this->mutex);
-    this->channels.emplace(i, std::move(channel));
-  }
-  return channelInfo;
-}
-
 void ChannelManager::remove_channel(uint32_t i) {
   std::unique_lock lock(this->mutex);
   this->channels.erase(i);
@@ -90,4 +76,25 @@ ClientManager::find_client(ws_handle &hdl) const {
     return std::nullopt;
   }
   return find->second;
+}
+
+std::vector<ChannelView> ChannelManager::get_views() {
+  std::vector<ChannelView> views;
+  for (const auto &[key, value] : this->channels) {
+    auto view = value->get_view();
+    views.push_back(view);
+  }
+  return views;
+}
+
+std::vector<char> ChannelManager::create_channel(std::string name,
+                                                 bool secret) {
+  auto channel = std::make_unique<Channel>(this->channel_id_tracker_, name);
+  spdlog::debug("New channel created: {}:{}", channel->id, channel->name);
+  this->channel_id_tracker_.fetch_add(1);
+  channel->secret.exchange(secret);
+  auto info = channel->info();
+
+  this->channels.emplace(channel->id, std::move(channel));
+  return info;
 }

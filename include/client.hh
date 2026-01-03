@@ -1,5 +1,6 @@
 #pragma once
 
+#include "configurations.hh"
 #include "spdlog/spdlog.h"
 #include "typedef.hh"
 #include "utilities.hh"
@@ -24,37 +25,33 @@ public:
   int fd;
   int id;
   std::mutex mtx;
+  bool admin{false};
   std::string username;
+  ClientTransport transport;
   std::optional<ws_handle> ws_hld;
   std::vector<uint32_t> channels{};
   std::atomic_bool connected{false};
-  ClientTransport transport;
+
+public:
+  bool is_member(const int channel_id);
+  bool send_packet(const Response packet);
 
   void set_connection(bool b);
-  bool is_member(const int channel_id);
   void add_channel(const int channel_id);
   void remove_channel(const int channel_id);
 
-  virtual bool send_packet(const Response packet);
-  std::string change_username(std::string username);
+  void set_admin(const std::vector<uint8_t> password);
+  std::string change_username(const std::vector<uint8_t> username);
 
-  explicit Client(int fd, int id) : transport(ClientTransport::TCP) {
-    std::string username = std::format("user0{0}", id);
-    this->ws_hld = std::nullopt;
-    this->username = username;
-    this->fd = fd;
-    this->id = id;
-  }
+  explicit Client(int fd, int id)
+      : fd(fd), id(id), username(std::format("user0{}", id)),
+        transport(ClientTransport::TCP), ws_hld(std::nullopt) {}
 
-  explicit Client(int id, ws_handle hdl) : transport(ClientTransport::WBS) {
-    std::string username = std::format("user0{0}", id);
-    this->username = username;
-    this->ws_hld = hdl;
-    this->fd = -1;
-    this->id = id;
-  }
+  explicit Client(int id, ws_handle hdl)
+      : fd(-1), id(id), username(std::format("user0{}", id)),
+        transport(ClientTransport::WBS), ws_hld(hdl) {}
 
-  virtual ~Client() {
+  ~Client() {
     if (this->fd != -1) {
       close(this->fd);
     }

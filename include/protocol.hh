@@ -26,4 +26,7 @@ Response channel_disconnect(const w_client &w_client, const Request &request);
 
 Response channel_message_request(const w_client &w_client,
                                  const Request &request);
+
+Response list_channels_request(const Request &request);
+Response create_channel_request(const Request &request);
 } // namespace Protocol

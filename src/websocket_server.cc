@@ -70,7 +70,7 @@ void WebSocketServer::on_message(ws_handle hdl, message_ptr msg) {
   }
 
   auto payload = msg->get_payload();
-  std::vector<uint8_t> buffer(payload.begin(), payload.end());
+  std::vector<uint8_t> buffer(payload.begin() + 4, payload.end());
   Request request(buffer);
 
   auto response = Protocol::handle_request(s_client, request);

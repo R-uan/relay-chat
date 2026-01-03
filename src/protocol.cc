@@ -2,8 +2,10 @@
 #include "managers.hh"
 #include "typedef.hh"
 #include "utilities.hh"
+#include <cstdint>
 #include <spdlog/spdlog.h>
 #include <string>
+#include <vector>
 
 Response Protocol::handle_request(const std::shared_ptr<Client> s_client,
                                   const Request &request) {
@@ -16,7 +18,19 @@ Response Protocol::handle_request(const std::shared_ptr<Client> s_client,
   }
 
   switch (request.type) {
+  case (uint32_t)CH_LIST:
+    spdlog::debug("CH_LIST request");
+    return Protocol::list_channels_request(request);
+  case (uint32_t)CH_CREATE:
+    spdlog::debug("CH_CRETE request");
+    if (s_client->admin)
+      return Protocol::create_channel_request(request);
+    return response(-1, PERMISSION_DENIED);
+  case (uint32_t)CH_MESSAGE:
+    spdlog::debug("CH_MESSAGE request");
+    return Protocol::channel_message_request(s_client, request);
   default:
+    spdlog::debug("Unknown request type: {}", request.type);
     return response(-1, ERROR, (std::string) "unknown request type");
   }
 }
@@ -24,12 +38,14 @@ Response Protocol::handle_request(const std::shared_ptr<Client> s_client,
 Response Protocol::handle_server_connection(const w_client w_client,
                                             const Request &request) {
   auto s_client = w_client.lock();
-  auto payload = request.payload;
-  std::string username(payload.begin(), payload.end());
-  auto fmtusername = s_client->change_username(username);
-  spdlog::debug("{} connected", fmtusername);
+  auto payload = split(request.payload, '\n');
+  auto username = s_client->change_username(payload[0]);
   s_client->set_connection(true);
-  return response(request.id, SVR_CONNECT, fmtusername);
+
+  if (payload.size() == 2)
+    s_client->set_admin(payload[1]);
+
+  return response(request.id, SVR_CONNECT, username);
 }
 
 /* Removes the client accross the application by lowering the shared_ptr
@@ -52,12 +68,8 @@ void Protocol::server_disconnect(const w_client &w_client) {
   for (int id : s_client->channels) {
     auto channel = channel_ctx.find_channel(id);
     if (channel != nullptr) {
-      // if the disconnect_member returns true it means the channel must be
-      // deleted
-      if (channel->remove_member(s_client)) {
-        spdlog::debug("{0} flagged for deletion", channel->name);
-        channel_ctx.remove_channel(id);
-      }
+      channel->leave_channel(s_client);
+      spdlog::debug("{0} flagged for deletion", channel->name);
     }
   }
 
@@ -70,45 +82,30 @@ void Protocol::server_disconnect(const w_client &w_client) {
 }
 
 /* Request to join a channel.
- * The JOIN packet payload will be composed of: <flag> \n <channel> \n <token>
- * - <flag>    : channel creation flag
- * - <channel> : target channel's id (int) to join.
- * - <token>   : invitation token (optional).
  */
 Response Protocol::channel_join_request(const w_client &w_client,
                                         const Request &request) {
+  auto payload = request.payload;
+  int channel_id = i32_from_le(payload);
   auto &ctx = ChannelManager::instance();
-  auto body = request.payload;
-  if (body.size() < 5)
-    return ::response(-1, CH_JOIN, INVALID_PACKET);
-
-  bool creation_flag = body[0] == 1; // create channel if doesn't exist ?
-  int channel_id = i32_from_le({body[1], body[2], body[3], body[4]});
   auto channel = ctx.find_channel(channel_id);
 
   if (channel == nullptr) { // channel doesn't exist...
-    // ...and will be created
-    if (creation_flag && ctx.has_capacity()) {
-      auto info = ctx.create_channel(channel_id, w_client);
-      return ::response(request.id, CH_JOIN, info);
-    }
-    // ...and won't be created
-    return ::response(-1, CH_JOIN);
+    return response(-1, NOT_FOUND, (std::string) "Channel not found.");
   } else { // channel exists and the client...
-    // ...successfully joined
-    std::string fail_reason;
-    auto result = channel->add_member(w_client);
+    auto result = channel->join_channel(w_client);
+    std::string fr;
+
     switch (result) {
     case JOINRESULT::BANNED:
-      fail_reason =
-          std::format("You are banned from channel {}", channel->name);
+      fr = std::format("You are banned from channel {}", channel->name);
       break;
     case JOINRESULT::FULL:
-      fail_reason = std::format("Channel is full: {}", channel->name);
+      fr = std::format("Channel is full: {}", channel->name);
       break;
     case JOINRESULT::SECRET:
-      fail_reason = std::format(
-          "You need an invitation to join this channel: {}", channel->name);
+      fr = std::format("You need an invitation to join this channel: {}",
+                       channel->name);
       break;
     case JOINRESULT::SUCCESS:
       auto s_client = w_client.lock();
@@ -117,8 +114,7 @@ Response Protocol::channel_join_request(const w_client &w_client,
       spdlog::debug("{0} joined {1}", s_client->username, channel->name);
       return ::response(request.id, CH_JOIN, channel_info);
     }
-    // ...couldn't join
-    return ::response(-1, CH_JOIN);
+    return ::response(-1, CH_JOIN, fr);
   }
 }
 
@@ -137,12 +133,7 @@ Response Protocol::channel_disconnect(const w_client &w_client,
       auto s_client = w_client.lock();
       s_client->remove_channel(channel_id);
       spdlog::debug("{0} left {1}", s_client->username, channel->name);
-
-      if (channel->remove_member(w_client)) {
-        spdlog::debug("{0} flagged for deletion", channel->name);
-        ctx.remove_channel(channel_id);
-      }
-
+      channel->leave_channel(w_client);
       return ::response(request.id, CH_LEAVE);
     }
   }
@@ -153,21 +144,64 @@ Response Protocol::channel_disconnect(const w_client &w_client,
 /* Sends message in a channel.
  * - Checks if the channel exists
  * - Checks if the client is in the channel.
+ * - Incoming
+ *    Message {
+ *      channelId = 4 bytes
+ *      replyTo = 4 bytes
+ *      message = ascii string
+ *    }
  */
 Response Protocol::channel_message_request(const w_client &w_client,
                                            const Request &request) {
   auto &ctx = ChannelManager::instance();
+
   const auto payload = request.payload;
-  const uint32_t channel_id = i32_from_le(payload);
-  const std::string message(payload.begin() + 4, payload.end());
+
+  const auto channel_id = i32_from_le(payload);
+  const auto reply_to =
+      i32_from_le({payload[4], payload[5], payload[6], payload[7]});
+  const std::string message(payload.begin() + 8, payload.end());
   const auto channel = ctx.find_channel(channel_id);
 
   if (channel != nullptr) {
-    if (w_client.lock()->is_member(channel_id)) {
-      channel->send_message(w_client, message);
+    auto s_client = w_client.lock();
+    MessageView msg_view(s_client->id, channel_id, reply_to, message);
+    if (s_client->is_member(channel_id)) {
+      channel->queue_message(msg_view);
       return ::response(request.id, CH_MESSAGE);
     }
   }
 
   return ::response(-1, CH_MESSAGE);
+}
+
+Response Protocol::create_channel_request(const Request &request) {
+  auto payload = request.payload;
+  auto &ctx = ChannelManager::instance();
+  std::string channel_name(payload.begin() + 1, payload.end());
+  bool secret = static_cast<int>(payload[0]) == 1;
+  auto info = ctx.create_channel(channel_name, secret);
+  return response(request.id, CH_CREATE, info);
+}
+
+Response Protocol::list_channels_request(const Request &request) {
+  auto &channel_manager = ChannelManager::instance();
+  auto views = channel_manager.get_views();
+  std::vector<uint8_t> views_bytes;
+  for (auto view : views) {
+    std::string id_str = std::to_string(*view.id);
+    views_bytes.insert(views_bytes.end(), id_str.begin(), id_str.end());
+    views_bytes.push_back('\n');
+
+    views_bytes.push_back(view.secret);
+    views_bytes.push_back('\n');
+
+    views_bytes.insert(views_bytes.end(), view.name->begin(), view.name->end());
+    views_bytes.push_back('\n');
+
+    // View separator (null byte)
+    views_bytes.push_back(0x00);
+  }
+  views_bytes.push_back(0x00);
+  return response(request.id, CH_LIST, views_bytes);
 }

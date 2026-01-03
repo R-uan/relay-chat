@@ -1,8 +1,13 @@
 #include "client.hh"
+#include "configurations.hh"
 #include <algorithm>
+#include <cstddef>
 #include <format>
 #include <mutex>
+#include <spdlog/spdlog.h>
+#include <string>
 #include <sys/socket.h>
+#include <vector>
 
 void Client::add_channel(const int channelId) {
   std::unique_lock lock(this->mtx);
@@ -29,11 +34,23 @@ bool Client::is_member(const int channelId) {
          this->channels.end();
 }
 
-void Client::set_connection(bool b) { this->connected.exchange(b); }
+void Client::set_connection(bool b) {
+  this->connected.exchange(b);
+  spdlog::debug("{} connection status changed: {}", this->username, b);
+}
 
-std::string Client::change_username(std::string username) {
+std::string Client::change_username(const std::vector<uint8_t> bytes) {
   std::unique_lock lock(this->mtx);
-  auto nusername = std::format("{0}{1}", username, this->id);
-  this->username = nusername;
-  return nusername;
+  std::string username(bytes.begin(), bytes.end());
+  this->username = std::format("{0}{1}", username, this->id);
+  return this->username;
+}
+
+void Client::set_admin(const std::vector<uint8_t> bytes) {
+  std::string password(bytes.begin(), bytes.end());
+  if (password == ServerConfiguration::instance().secret()) {
+    spdlog::debug("{} registered as an admin", this->username);
+    std::unique_lock lock(this->mtx);
+    this->admin = true;
+  }
 }
